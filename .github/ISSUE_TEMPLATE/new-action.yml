@@ -1,0 +1,31 @@
+name: 提交新动作
+description: 提交一个或多个 FF14 动作到共享库
+title: "[动作] "
+labels: ["new-action"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交一个或多个动作，GitHub Action 会自动合入 `community-actions.json`，所有人刷新工具就能看到。
+
+  - type: textarea
+    id: json
+    attributes:
+      label: 动作 JSON（请按下方格式填写）
+      description: |
+        填一个或多个动作的 JSON 数组。每条必须包含：id、name、command、duration、category、verified。
+      placeholder: |
+        ```json
+        [
+          {
+            "id": "act_xxx",
+            "name": "动作名",
+            "command": "/emote xxx",
+            "duration": 2,
+            "category": "通用",
+            "verified": true
+          }
+        ]
+        ```
+    validations:
+      required: true
