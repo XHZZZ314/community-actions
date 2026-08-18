@@ -1,6 +1,17 @@
 name: Sync community actions
 
-# 监听打 "new-action" 标签的 Issue，自动把 Issue body 里的 JSON 合并进 community-actions.json
+# 监听含 "new-action" 标签（或 body 含 ```json 代码块）的 Issue，自动合并 JSON
+# 双保险：label 未创建/未打上时，只要 body 有 ```json 也会处理
+#
+# 支持的操作（JSON 数组里每条动作可用 "op" 字段指定，不填默认为 upsert）：
+#   - 无 op / "op":"add" / "op":"update"：同 id 覆盖（upsert），修正错误直接重提一次即可
+#   - "op":"delete"：按 id 删除共享库中的该动作
+#
+# 校验规则（不合法的条目会被跳过并在评论中说明）：
+#   - name：1~30 字符
+#   - command：以 / 开头，最长 80 字符
+#   - category：通用 / 舞蹈 / 表情 / 社交 / 坐姿 / 职业切换（缺省为"通用"）
+#   - duration：0~60 秒（缺省 2）
 
 on:
   issues:
@@ -25,47 +36,83 @@ jobs:
             const fs = require('fs');
             const issue = context.payload.issue;
             const body = issue.body || '';
-            // 提取 ```json ... ``` 代码块
+            const CATS = ['通用', '舞蹈', '表情', '社交', '坐姿', '职业切换'];
+
+            async function comment(text) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, body: text
+              });
+            }
+
             const match = body.match(/```json\s*([\s\S]*?)\s*```/);
             if (!match) {
-              core.setFailed('未找到 JSON 代码块（请用 ```json ... ``` 包裹动作数组）');
+              await comment('❌ 未找到 JSON 代码块（请用 ```json ... ``` 包裹动作数组）');
               return;
             }
             let incoming;
             try { incoming = JSON.parse(match[1]); }
-            catch (e) { core.setFailed('JSON 解析失败: ' + e.message); return; }
+            catch (e) { await comment('❌ JSON 解析失败：' + e.message + '\n请检查是否多写/漏写了引号或逗号。'); return; }
             if (!Array.isArray(incoming)) {
-              core.setFailed('JSON 应为动作数组（[ ... ]）');
+              await comment('❌ JSON 应为动作数组（[ ... ]）');
               return;
             }
-            // 读取并合并
+
             const path = 'community-actions.json';
             let existing = [];
             try { existing = JSON.parse(fs.readFileSync(path, 'utf8')); } catch {}
             if (!Array.isArray(existing)) existing = [];
-            const ids = new Set(existing.map((a) => a.id));
-            let added = 0, dup = 0, invalid = 0;
-            for (const a of incoming) {
-              if (!a || !a.id || !a.command) { invalid++; continue; }
-              if (ids.has(a.id)) { dup++; continue; }
-              existing.push(a);
-              ids.add(a.id);
-              added++;
-            }
-            if (added === 0) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: issue.number,
-                body: `没有新增动作：${dup} 个重复、${invalid} 个无效。请检查 id 是否正确。`
-              });
+
+            let added = 0, updated = 0, deleted = 0, dupCmd = 0, invalid = 0;
+            const problems = [];
+
+            const process = (a, isDelete) => {
+              if (!a || typeof a.id !== 'string' || !a.id) { problems.push('某条缺少 id，已跳过'); invalid++; return; }
+              const idx = existing.findIndex((x) => x.id === a.id);
+              if (isDelete) {
+                if (idx >= 0) { existing.splice(idx, 1); deleted++; }
+                else { problems.push(`删除失败：id ${a.id} 不存在`); invalid++; }
+                return;
+              }
+              // 校验
+              const name = typeof a.name === 'string' ? a.name.trim() : '';
+              const command = typeof a.command === 'string' ? a.command.trim() : '';
+              if (!name || name.length > 30) { problems.push(`「${a.id}」name 必须为 1~30 字`); invalid++; return; }
+              if (!command.startsWith('/') || command.length > 80) { problems.push(`「${name}」command 必须以 / 开头且不超过 80 字`); invalid++; return; }
+              const category = CATS.includes(a.category) ? a.category : (a.category ? null : '通用');
+              if (!category) { problems.push(`「${name}」category 必须是：${CATS.join(' / ')}`); invalid++; return; }
+              const duration = Math.max(0, Math.min(60, Number(a.duration) || 2));
+              // 按 command 查重（不同 id 相同指令视为重复动作）
+              const sameCmd = existing.find((x) => x.command === command && x.id !== a.id);
+              if (sameCmd && idx < 0) {
+                problems.push(`「${name}」与已有动作「${sameCmd.name}」指令相同（${command}），已跳过。如想修改它请直接复用其 id 提交。`);
+                dupCmd++;
+                return;
+              }
+              const rec = { id: a.id, name, command, duration, category, verified: a.verified !== false };
+              if (idx >= 0) { existing[idx] = rec; updated++; }
+              else { existing.push(rec); added++; }
+            };
+
+            for (const a of incoming) process(a, a && a.op === 'delete');
+
+            if (added + updated + deleted === 0) {
+              await comment([
+                '⚠️ 没有任何变更生效。',
+                dupCmd ? `\n- ${dupCmd} 条指令重复` : '',
+                invalid ? `\n- ${invalid} 条无效` : '',
+                problems.length ? '\n\n具体问题：\n' + problems.map((p) => '- ' + p).join('\n') : ''
+              ].join(''));
               return;
             }
+
             fs.writeFileSync(path, JSON.stringify(existing, null, 2) + '\n');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: issue.number,
-              body: `✅ 已合并：新增 ${added} 个动作${dup ? `，跳过 ${dup} 个重复` : ''}${invalid ? `，${invalid} 个无效` : ''}。\n\n刷新 [FF14 编舞时间轴工具](https://47d057355e6242028b9b0caaa21afee0.app.workbuddy.link/?xhz) 即可看到新动作。`
-            });
+            await comment([
+              `✅ 已生效：新增 ${added} 个、更新 ${updated} 个、删除 ${deleted} 个。`,
+              (dupCmd || invalid) ? `\n⚠️ 另有 ${dupCmd} 条指令重复、${invalid} 条无效被跳过。` : '',
+              problems.length ? '\n\n被跳过的原因：\n' + problems.map((p) => '- ' + p).join('\n') : '',
+              `\n\n刷新 [FF14 编舞时间轴工具](https://xhzzz314.github.io) 即可看到变化。`
+            ].join(''));
             await github.rest.issues.update({
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: issue.number, state: 'closed'
