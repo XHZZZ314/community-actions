@@ -1,0 +1,79 @@
+name: Sync community actions
+
+# 监听打 "new-action" 标签的 Issue，自动把 Issue body 里的 JSON 合并进 community-actions.json
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: contains(github.event.issue.labels.*.name, 'new-action')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse and merge action JSON
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+            // 提取 ```json ... ``` 代码块
+            const match = body.match(/```json\s*([\s\S]*?)\s*```/);
+            if (!match) {
+              core.setFailed('未找到 JSON 代码块（请用 ```json ... ``` 包裹动作数组）');
+              return;
+            }
+            let incoming;
+            try { incoming = JSON.parse(match[1]); }
+            catch (e) { core.setFailed('JSON 解析失败: ' + e.message); return; }
+            if (!Array.isArray(incoming)) {
+              core.setFailed('JSON 应为动作数组（[ ... ]）');
+              return;
+            }
+            // 读取并合并
+            const path = 'community-actions.json';
+            let existing = [];
+            try { existing = JSON.parse(fs.readFileSync(path, 'utf8')); } catch {}
+            if (!Array.isArray(existing)) existing = [];
+            const ids = new Set(existing.map((a) => a.id));
+            let added = 0, dup = 0, invalid = 0;
+            for (const a of incoming) {
+              if (!a || !a.id || !a.command) { invalid++; continue; }
+              if (ids.has(a.id)) { dup++; continue; }
+              existing.push(a);
+              ids.add(a.id);
+              added++;
+            }
+            if (added === 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `没有新增动作：${dup} 个重复、${invalid} 个无效。请检查 id 是否正确。`
+              });
+              return;
+            }
+            fs.writeFileSync(path, JSON.stringify(existing, null, 2) + '\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number,
+              body: `✅ 已合并：新增 ${added} 个动作${dup ? `，跳过 ${dup} 个重复` : ''}${invalid ? `，${invalid} 个无效` : ''}。\n\n刷新 [FF14 编舞时间轴工具](https://47d057355e6242028b9b0caaa21afee0.app.workbuddy.link/?xhz) 即可看到新动作。`
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number, state: 'closed'
+            });
+
+      - name: Commit and push
+        run: |
+          git config user.name "community-actions-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add community-actions.json
+          git diff --cached --quiet || git commit -m "chore: sync actions from issue #${{ github.event.issue.number }}"
+          git push
