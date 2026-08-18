@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "id": "act_msyb77fh_26n6",
+    "name": "大失所望",
+    "command": "/大失所望",
+    "duration": 2,
+    "category": "通用",
+    "verified": true
+  }
+]
