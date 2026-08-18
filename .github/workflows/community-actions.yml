@@ -12,6 +12,7 @@ name: Sync community actions
 #   - command：以 / 开头，最长 80 字符
 #   - category：通用 / 舞蹈 / 表情 / 社交 / 坐姿 / 职业切换（缺省为"通用"）
 #   - duration：0~60 秒（缺省 2）
+#   - kind（可选）：instant=单次动作 / sustain=持续动作（决定时间轴轨道；非法值忽略）
 
 on:
   issues:
@@ -82,6 +83,8 @@ jobs:
               const category = CATS.includes(a.category) ? a.category : (a.category ? null : '通用');
               if (!category) { problems.push(`「${name}」category 必须是：${CATS.join(' / ')}`); invalid++; return; }
               const duration = Math.max(0, Math.min(60, Number(a.duration) || 2));
+              // 动作类型（可选）：instant=单次 / sustain=持续；非法值忽略
+              const kind = a.kind === 'sustain' ? 'sustain' : a.kind === 'instant' ? 'instant' : undefined;
               // 按 command 查重（不同 id 相同指令视为重复动作）
               const sameCmd = existing.find((x) => x.command === command && x.id !== a.id);
               if (sameCmd && idx < 0) {
@@ -89,7 +92,7 @@ jobs:
                 dupCmd++;
                 return;
               }
-              const rec = { id: a.id, name, command, duration, category, verified: a.verified !== false };
+              const rec = { id: a.id, name, command, duration, category, verified: a.verified !== false, ...(kind ? { kind } : {}) };
               if (idx >= 0) { existing[idx] = rec; updated++; }
               else { existing.push(rec); added++; }
             };
