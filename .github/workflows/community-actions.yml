@@ -10,8 +10,9 @@ name: Sync community actions
 # 校验规则（不合法的条目会被跳过并在评论中说明）：
 #   - name：1~30 字符
 #   - command：以 / 开头，最长 80 字符
-#   - category：通用 / 舞蹈 / 表情 / 社交 / 坐姿 / 职业切换（缺省为"通用"）
+#   - category：普通 / 职业切换 / 技能 / 舞蹈 / 表情（缺省为"普通"；旧分类 通用/坐姿/社交 自动归一为"普通"）
 #   - duration：0~60 秒（缺省 2）
+#   - raceDurations（可选）：{ 种族id: 秒数 }，种族 id 白名单校验，秒数 0~60
 #   - kind（可选）：instant=单次动作 / sustain=持续动作（决定时间轴轨道；非法值忽略）
 
 on:
@@ -38,6 +39,10 @@ jobs:
             const issue = context.payload.issue;
             const body = issue.body || '';
             const CATS = ['普通', '职业切换', '技能', '舞蹈', '表情'];
+            // 旧分类归一：通用/坐姿/社交 → 普通
+            const LEGACY = { '通用': '普通', '坐姿': '普通', '社交': '普通' };
+            // 种族 id 白名单（与网页端 RACES 一致）
+            const RACE_IDS = ['hyur_f','highland_f','elezen_f','lalafell_f','miqote_f','roegadyn_f','au_ra_f','viera_f','hrothgar_f','hyur_m','highland_m','elezen_m','miqote_m','roegadyn_m','au_ra_m','viera_m','hrothgar_m','lalafell_m'];
 
             async function comment(text) {
               await github.rest.issues.createComment({
@@ -80,9 +85,22 @@ jobs:
               const command = typeof a.command === 'string' ? a.command.trim() : '';
               if (!name || name.length > 30) { problems.push(`「${a.id}」name 必须为 1~30 字`); invalid++; return; }
               if (!command.startsWith('/') || command.length > 80) { problems.push(`「${name}」command 必须以 / 开头且不超过 80 字`); invalid++; return; }
-              const category = CATS.includes(a.category) ? a.category : (a.category ? null : '通用');
+              const rawCat = LEGACY[a.category] || a.category || '普通';
+              const category = CATS.includes(rawCat) ? rawCat : null;
               if (!category) { problems.push(`「${name}」category 必须是：${CATS.join(' / ')}`); invalid++; return; }
               const duration = Math.max(0, Math.min(60, Number(a.duration) || 2));
+              // 种族特定时长（可选）：{ 种族id: 秒数 }；非法种族 id 或非法秒数的条目剔除
+              let raceDurations;
+              if (a.raceDurations && typeof a.raceDurations === 'object' && !Array.isArray(a.raceDurations)) {
+                raceDurations = {};
+                for (const [rid, rv] of Object.entries(a.raceDurations)) {
+                  if (!RACE_IDS.includes(rid)) { problems.push(`「${name}」种族 id ${rid} 不在白名单，已剔除该条`); continue; }
+                  const sec = Number(rv);
+                  if (!Number.isFinite(sec) || sec <= 0 || sec > 60) { problems.push(`「${name}」种族 ${rid} 的时长必须为 0~60 秒，已剔除该条`); continue; }
+                  raceDurations[rid] = Math.round(sec * 10) / 10;
+                }
+                if (Object.keys(raceDurations).length === 0) raceDurations = undefined;
+              }
               // 动作类型（可选）：instant=单次 / sustain=持续；非法值忽略
               const kind = a.kind === 'sustain' ? 'sustain' : a.kind === 'instant' ? 'instant' : undefined;
               // 按 command 查重（不同 id 相同指令视为重复动作）
@@ -92,7 +110,7 @@ jobs:
                 dupCmd++;
                 return;
               }
-              const rec = { id: a.id, name, command, duration, category, verified: a.verified !== false, ...(kind ? { kind } : {}) };
+              const rec = { id: a.id, name, command, duration, category, verified: a.verified !== false, ...(kind ? { kind } : {}), ...(raceDurations ? { raceDurations } : {}) };
               if (idx >= 0) { existing[idx] = rec; updated++; }
               else { existing.push(rec); added++; }
             };
