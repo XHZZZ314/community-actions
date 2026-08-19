@@ -37,7 +37,7 @@ jobs:
             const fs = require('fs');
             const issue = context.payload.issue;
             const body = issue.body || '';
-            const CATS = ['通用', '舞蹈', '表情', '社交', '坐姿', '职业切换'];
+            const CATS = ['普通', '职业切换', '技能', '舞蹈', '表情'];
 
             async function comment(text) {
               await github.rest.issues.createComment({
